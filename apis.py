@@ -250,6 +250,240 @@ def get_customer_details(customer_id):
             cursor.close()
             connection.close()
 
+@api.route('/customers/<int:customer_id>/orders', methods=['GET'])
+def get_customer_orders(customer_id):
+    """
+    Get all orders for a specific customer
+    Path parameter:
+    - customer_id: The ID of the customer
+    Query parameters:
+    - page: Page number (default: 1)
+    - limit: Number of orders per page (default: 10, max: 100)
+    - status: Filter by order status (optional)
+    """
+    try:
+        # Validate customer_id
+        if customer_id <= 0:
+            return jsonify({
+                'error': 'Invalid Customer ID',
+                'message': 'Customer ID must be a positive integer',
+                'status': 400
+            }), 400
+        
+        # Get pagination parameters
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', current_app.config['DEFAULT_PAGE_SIZE'], type=int)
+        status_filter = request.args.get('status', '', type=str).strip().lower()
+        
+        # Validate parameters
+        if page < 1:
+            return jsonify({
+                'error': 'Invalid page number',
+                'message': 'Page number must be 1 or greater',
+                'status': 400
+            }), 400
+            
+        if limit < 1 or limit > current_app.config['MAX_PAGE_SIZE']:
+            return jsonify({
+                'error': 'Invalid limit',
+                'message': f'Limit must be between 1 and {current_app.config["MAX_PAGE_SIZE"]}',
+                'status': 400
+            }), 400
+        
+        # Get database connection
+        connection = get_db_connection()
+        if not connection:
+            return jsonify({
+                'error': 'Database Error',
+                'message': 'Unable to connect to database',
+                'status': 500
+            }), 500
+        
+        cursor = connection.cursor(dictionary=True)
+        
+        # First, verify customer exists
+        cursor.execute("SELECT id, first_name, last_name FROM users WHERE id = %s", (customer_id,))
+        customer = cursor.fetchone()
+        
+        if not customer:
+            return jsonify({
+                'error': 'Customer Not Found',
+                'message': f'Customer with ID {customer_id} does not exist',
+                'status': 404
+            }), 404
+        
+        # Build query with optional status filter
+        base_query = """
+            SELECT order_id, user_id, status, gender, created_at, 
+                   returned_at, shipped_at, delivered_at, num_of_item
+            FROM orders
+            WHERE user_id = %s
+        """
+        count_query = "SELECT COUNT(*) as total FROM orders WHERE user_id = %s"
+        
+        params = [customer_id]
+        if status_filter:
+            base_query += " AND LOWER(status) = %s"
+            count_query += " AND LOWER(status) = %s"
+            params.append(status_filter)
+        
+        # Get total count
+        cursor.execute(count_query, params)
+        total_count = cursor.fetchone()['total']
+        
+        # Calculate offset
+        offset = (page - 1) * limit
+        
+        # Get orders with pagination
+        query = base_query + " ORDER BY created_at DESC LIMIT %s OFFSET %s"
+        cursor.execute(query, params + [limit, offset])
+        orders = cursor.fetchall()
+        
+        # Format orders response
+        formatted_orders = []
+        for order in orders:
+            formatted_orders.append({
+                'order_id': order['order_id'],
+                'user_id': order['user_id'],
+                'status': order['status'],
+                'gender': order['gender'],
+                'num_of_items': order['num_of_item'],
+                'created_at': order['created_at'].isoformat() if order['created_at'] and hasattr(order['created_at'], 'isoformat') else str(order['created_at']) if order['created_at'] else None,
+                'returned_at': order['returned_at'].isoformat() if order['returned_at'] and hasattr(order['returned_at'], 'isoformat') else str(order['returned_at']) if order['returned_at'] else None,
+                'shipped_at': order['shipped_at'].isoformat() if order['shipped_at'] and hasattr(order['shipped_at'], 'isoformat') else str(order['shipped_at']) if order['shipped_at'] else None,
+                'delivered_at': order['delivered_at'].isoformat() if order['delivered_at'] and hasattr(order['delivered_at'], 'isoformat') else str(order['delivered_at']) if order['delivered_at'] else None
+            })
+        
+        # Calculate pagination info
+        total_pages = (total_count + limit - 1) // limit
+        has_next = page < total_pages
+        has_prev = page > 1
+        
+        response = {
+            'customer': {
+                'id': customer['id'],
+                'name': f"{customer['first_name']} {customer['last_name']}"
+            },
+            'orders': formatted_orders,
+            'pagination': {
+                'page': page,
+                'limit': limit,
+                'total_count': total_count,
+                'total_pages': total_pages,
+                'has_next': has_next,
+                'has_prev': has_prev
+            },
+            'status': 200
+        }
+        
+        if status_filter:
+            response['filter'] = {'status': status_filter}
+            
+        return jsonify(response), 200
+        
+    except Exception as e:
+        logger.error(f"Error in get_customer_orders: {e}")
+        return jsonify({
+            'error': 'Internal Server Error',
+            'message': 'An error occurred while fetching customer orders',
+            'status': 500
+        }), 500
+    finally:
+        if 'connection' in locals() and connection and connection.is_connected():
+            cursor.close()
+            connection.close()
+
+@api.route('/orders/<int:order_id>', methods=['GET'])
+def get_order_details(order_id):
+    """
+    Get specific order details
+    Path parameter:
+    - order_id: The ID of the order
+    """
+    try:
+        # Validate order_id
+        if order_id <= 0:
+            return jsonify({
+                'error': 'Invalid Order ID',
+                'message': 'Order ID must be a positive integer',
+                'status': 400
+            }), 400
+        
+        # Get database connection
+        connection = get_db_connection()
+        if not connection:
+            return jsonify({
+                'error': 'Database Error',
+                'message': 'Unable to connect to database',
+                'status': 500
+            }), 500
+        
+        cursor = connection.cursor(dictionary=True)
+        
+        # Get order details with customer information
+        order_query = """
+            SELECT o.order_id, o.user_id, o.status, o.gender, o.created_at,
+                   o.returned_at, o.shipped_at, o.delivered_at, o.num_of_item,
+                   u.first_name, u.last_name, u.email, u.age, u.city, u.state, u.country
+            FROM orders o
+            LEFT JOIN users u ON o.user_id = u.id
+            WHERE o.order_id = %s
+        """
+        cursor.execute(order_query, (order_id,))
+        order = cursor.fetchone()
+        
+        if not order:
+            return jsonify({
+                'error': 'Order Not Found',
+                'message': f'Order with ID {order_id} does not exist',
+                'status': 404
+            }), 404
+        
+        # Format the response
+        response = {
+            'order': {
+                'order_id': order['order_id'],
+                'user_id': order['user_id'],
+                'status': order['status'],
+                'gender': order['gender'],
+                'num_of_items': order['num_of_item'],
+                'timestamps': {
+                    'created_at': order['created_at'].isoformat() if order['created_at'] and hasattr(order['created_at'], 'isoformat') else str(order['created_at']) if order['created_at'] else None,
+                    'returned_at': order['returned_at'].isoformat() if order['returned_at'] and hasattr(order['returned_at'], 'isoformat') else str(order['returned_at']) if order['returned_at'] else None,
+                    'shipped_at': order['shipped_at'].isoformat() if order['shipped_at'] and hasattr(order['shipped_at'], 'isoformat') else str(order['shipped_at']) if order['shipped_at'] else None,
+                    'delivered_at': order['delivered_at'].isoformat() if order['delivered_at'] and hasattr(order['delivered_at'], 'isoformat') else str(order['delivered_at']) if order['delivered_at'] else None
+                }
+            },
+            'customer': {
+                'id': order['user_id'],
+                'first_name': order['first_name'],
+                'last_name': order['last_name'],
+                'full_name': f"{order['first_name']} {order['last_name']}" if order['first_name'] and order['last_name'] else None,
+                'email': order['email'],
+                'age': order['age'],
+                'location': {
+                    'city': order['city'],
+                    'state': order['state'],
+                    'country': order['country']
+                }
+            },
+            'status': 200
+        }
+        
+        return jsonify(response), 200
+        
+    except Exception as e:
+        logger.error(f"Error in get_order_details: {e}")
+        return jsonify({
+            'error': 'Internal Server Error',
+            'message': 'An error occurred while fetching order details',
+            'status': 500
+        }), 500
+    finally:
+        if 'connection' in locals() and connection and connection.is_connected():
+            cursor.close()
+            connection.close()
+
 @api.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
