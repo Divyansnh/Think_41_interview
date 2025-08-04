@@ -71,11 +71,17 @@ def list_customers():
         
         cursor = connection.cursor(dictionary=True)
         
-        # Build query with optional search
+        # Build query with optional search and order count
         base_query = """
-            SELECT id, first_name, last_name, email, age, gender, 
-                   state, city, country, timestamp
-            FROM users
+            SELECT u.id, u.first_name, u.last_name, u.email, u.age, u.gender, 
+                   u.state, u.city, u.country, u.timestamp,
+                   COALESCE(o.order_count, 0) as order_count
+            FROM users u
+            LEFT JOIN (
+                SELECT user_id, COUNT(*) as order_count
+                FROM orders
+                GROUP BY user_id
+            ) o ON u.id = o.user_id
         """
         count_query = "SELECT COUNT(*) as total FROM users"
         
